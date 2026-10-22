@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Terjemah Layar</string>
+    <string name="service_label">Terjemah Layar</string>
+    <string name="tile_label">Terjemah Layar</string>
+    <string name="service_description">Menampilkan tombol mengambang. Saat diketuk, aplikasi mengambil gambar layar, membaca teksnya di dalam HP, lalu menampilkan terjemahannya di atas teks asli. Gambar layar tidak dikirim ke mana pun, kecuali Anda sendiri menekan tombol \"Lens\".</string>
+</resources>

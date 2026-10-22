@@ -1,0 +1,59 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'id.terjemahlayar'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId 'id.terjemahlayar'
+        minSdk 30          // Android 11+: dibutuhkan untuk mengambil tangkapan layar dari layanan aksesibilitas
+        targetSdk 35
+        versionCode 1
+        versionName '1.0'
+        ndk {
+            // HP modern (termasuk Tecno Camon 40 Pro) memakai arm64. Membatasi ini membuat APK jauh lebih kecil.
+            abiFilters 'arm64-v8a'
+        }
+    }
+
+    signingConfigs {
+        // Kunci tetap di dalam proyek, supaya versi baru bisa dipasang menimpa versi lama.
+        debug {
+            storeFile file('debug.keystore')
+            storePassword 'android'
+            keyAlias 'androiddebugkey'
+            keyPassword 'android'
+        }
+    }
+
+    buildTypes {
+        debug {
+            signingConfig signingConfigs.debug
+        }
+        release {
+            minifyEnabled false
+            signingConfig signingConfigs.debug
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+dependencies {
+    implementation 'androidx.core:core:1.13.1'
+
+    // Pengenal teks (OCR) di perangkat — bekerja tanpa internet
+    implementation 'com.google.mlkit:text-recognition:16.0.1'
+    implementation 'com.google.mlkit:text-recognition-chinese:16.0.1'
+    implementation 'com.google.mlkit:text-recognition-japanese:16.0.1'
+    implementation 'com.google.mlkit:text-recognition-korean:16.0.1'
+
+    // Deteksi bahasa + terjemahan di perangkat (paket bahasa diunduh sekali, lalu bisa offline)
+    implementation 'com.google.mlkit:language-id:17.0.6'
+    implementation 'com.google.mlkit:translate:17.0.3'
+}
