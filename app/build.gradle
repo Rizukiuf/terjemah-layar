@@ -45,6 +45,8 @@ android {
 }
 
 dependencies {
+    // Samakan versi library Kotlin yang dibawa ML Kit (lama) dan AndroidX (baru) agar tidak bentrok
+    implementation platform('org.jetbrains.kotlin:kotlin-bom:1.8.22')
     implementation 'androidx.core:core:1.13.1'
 
     // Pengenal teks (OCR) di perangkat — bekerja tanpa internet
