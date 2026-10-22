@@ -34,7 +34,14 @@ jobs:
       - name: Build APK
         run: |
           chmod +x gradlew
-          ./gradlew assembleDebug --no-daemon --stacktrace
+          set -o pipefail
+          if ! ./gradlew assembleDebug --no-daemon 2>&1 | tee build.log; then
+            # Ringkas inti error menjadi catatan (annotation) agar mudah dibaca
+            MSG=$( { grep -E "error:|e: |ERROR:|AAPT|Could not|What went wrong" -A3 build.log | head -60; \
+                     grep -A25 "What went wrong" build.log | head -40; } | sed 's/%/%25/g' | awk 'BEGIN{ORS="%0A"} {print}')
+            echo "::error title=Build gagal::${MSG}"
+            exit 1
+          fi
           mkdir -p out
           cp app/build/outputs/apk/debug/app-debug.apk out/TerjemahLayar.apk
 
