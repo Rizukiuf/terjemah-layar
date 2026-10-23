@@ -63,6 +63,7 @@ public class ScreenTranslateService extends AccessibilityService {
         instance = this;
         wm = getSystemService(WindowManager.class);
         pipeline = new TranslatePipeline();
+        pipeline.warmUp();
         applyPrefs();
 
         // Tombol aksesibilitas sistem (opsional) juga memicu terjemahan.
@@ -289,25 +290,38 @@ public class ScreenTranslateService extends AccessibilityService {
 
     private void runPipeline(Bitmap bmp) {
         if (pipeline == null) { busy = false; return; }
-        pipeline.run(bmp, Prefs.script(this), Prefs.target(this), new TranslatePipeline.Callback() {
+        pipeline.run(bmp, Prefs.source(this), Prefs.target(this), new TranslatePipeline.Callback() {
             @Override
             public void onStatus(String message) {
-                showToast(message, false);
+                showToast(message, true);
             }
 
             @Override
-            public void onDone(List<TranslatePipeline.Item> items) {
+            public void onDone(TranslatePipeline.Result result) {
                 busy = false;
                 setBubbleBusy(false);
                 cancelToast();
-                showOverlay(items);
+                if (overlay != null) overlay.setResult(result);
+                else showOverlay(result);
             }
 
             @Override
             public void onError(String message) {
+                if (overlay != null) overlay.setBusy(false);
                 fail(message);
             }
         });
+    }
+
+    /** Pengguna mengganti bahasa di layar hasil: terjemahkan ulang gambar layar yang sama. */
+    private void retranslate(String source, String target) {
+        Prefs.setSource(this, source);
+        Prefs.setTarget(this, target);
+        if (lastShot == null) return;
+        if (overlay != null) overlay.setBusy(true);
+        busy = true;
+        setBubbleBusy(true);
+        runPipeline(lastShot);
     }
 
     private void fail(String message) {
@@ -328,9 +342,14 @@ public class ScreenTranslateService extends AccessibilityService {
 
     // ---------------------------------------------------------------- lapisan hasil
 
-    private void showOverlay(List<TranslatePipeline.Item> items) {
+    private void showOverlay(TranslatePipeline.Result result) {
         removeOverlay();
-        overlay = new ResultOverlay(this, new ResultOverlay.Actions() {
+        overlay = new ResultOverlay(this, Prefs.source(this), Prefs.target(this), new ResultOverlay.Actions() {
+            @Override
+            public void onLanguagesChanged(String source, String target) {
+                retranslate(source, target);
+            }
+
             @Override
             public void onClose() {
                 removeOverlay();
@@ -349,7 +368,7 @@ public class ScreenTranslateService extends AccessibilityService {
                 openInLens();
             }
         });
-        overlay.setItems(items);
+        overlay.setResult(result);
 
         WindowManager.LayoutParams p = new WindowManager.LayoutParams(
                 WindowManager.LayoutParams.MATCH_PARENT,

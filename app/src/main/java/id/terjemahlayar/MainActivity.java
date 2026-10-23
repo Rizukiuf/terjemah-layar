@@ -19,8 +19,6 @@ import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.LinearLayout;
-import android.widget.RadioButton;
-import android.widget.RadioGroup;
 import android.widget.ScrollView;
 import android.widget.Spinner;
 import android.widget.TextView;
@@ -33,7 +31,6 @@ import com.google.mlkit.nl.translate.Translator;
 import com.google.mlkit.nl.translate.TranslatorOptions;
 
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 
 /** Layar pengaturan & panduan singkat. */
@@ -79,56 +76,18 @@ public class MainActivity extends Activity {
         root.addView(appInfo);
 
         // ---- Langkah 2: bahasa
-        root.addView(header("2. Terjemahkan ke bahasa"));
-        Spinner targetSpinner = new Spinner(this);
-        List<String> codes = new ArrayList<>(TranslateLanguage.getAllLanguages());
-        Collections.sort(codes, (a, b) -> TranslatePipeline.displayName(a).compareTo(TranslatePipeline.displayName(b)));
-        List<String> names = new ArrayList<>();
-        for (String c : codes) names.add(TranslatePipeline.displayName(c));
-        ArrayAdapter<String> adapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, names);
-        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
-        targetSpinner.setAdapter(adapter);
-        int sel = codes.indexOf(Prefs.target(this));
-        if (sel >= 0) targetSpinner.setSelection(sel);
-        targetSpinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
-            @Override
-            public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
-                Prefs.setTarget(MainActivity.this, codes.get(position));
-            }
-
-            @Override
-            public void onNothingSelected(AdapterView<?> parent) { }
-        });
-        root.addView(targetSpinner);
-
-        // ---- Langkah 3: jenis huruf sumber
-        root.addView(header("3. Teks yang ingin dibaca"));
-        RadioGroup scripts = new RadioGroup(this);
-        String[][] options = {
-                {Prefs.SCRIPT_LATIN, "Huruf Latin (Inggris, Spanyol, Prancis, Vietnam, dll.)"},
-                {Prefs.SCRIPT_CHINESE, "Huruf Mandarin / China"},
-                {Prefs.SCRIPT_JAPANESE, "Huruf Jepang"},
-                {Prefs.SCRIPT_KOREAN, "Huruf Korea"},
-        };
-        String current = Prefs.script(this);
-        for (String[] o : options) {
-            RadioButton rb = new RadioButton(this);
-            rb.setText(o[1]);
-            rb.setId(View.generateViewId());
-            rb.setTag(o[0]);
-            scripts.addView(rb);
-            if (o[0].equals(current)) rb.setChecked(true);
-        }
-        scripts.setOnCheckedChangeListener((group, checkedId) -> {
-            View rb = group.findViewById(checkedId);
-            if (rb != null) Prefs.setScript(this, (String) rb.getTag());
-        });
-        root.addView(scripts);
-        root.addView(note("Bahasa sumber dideteksi otomatis. Pilihan ini hanya menentukan jenis huruf yang dibaca. "
-                + "Pilihan Mandarin/Jepang/Korea juga tetap bisa membaca huruf Latin."));
+        root.addView(header("2. Bahasa"));
+        root.addView(note("Dari (bahasa teks di layar):"));
+        root.addView(languageSpinner(Langs.sourceOptions(), Prefs.source(this),
+                code -> Prefs.setSource(this, code)));
+        root.addView(note("Ke (bahasa terjemahan):"));
+        root.addView(languageSpinner(Langs.targetOptions(), Prefs.target(this),
+                code -> Prefs.setTarget(this, code)));
+        root.addView(note("\"Otomatis\" mengenali sendiri teks Inggris, Jepang, Korea, Mandarin, dan bahasa berhuruf Latin lain. "
+                + "Bahasa juga bisa diganti langsung di layar hasil terjemahan lewat tombol di bagian atas."));
 
         // ---- Langkah 4: tombol & pintasan
-        root.addView(header("4. Cara memicu terjemahan"));
+        root.addView(header("3. Cara memicu terjemahan"));
         CheckBox bubbleBox = new CheckBox(this);
         bubbleBox.setText("Tampilkan tombol mengambang 文A");
         bubbleBox.setChecked(Prefs.bubbleEnabled(this));
@@ -147,13 +106,14 @@ public class MainActivity extends Activity {
         }
         root.addView(note("• Ketuk tombol 文A → layar langsung diterjemahkan.\n"
                 + "• Geser tombol untuk memindahkannya. Tahan tombol untuk membuka halaman ini.\n"
-                + "• Pada hasil terjemahan: ketuk di mana saja untuk menutup, tahan untuk mengintip teks asli.\n"
+                + "• Pada hasil terjemahan: ketuk di mana saja untuk menutup, tahan untuk mengintip teks asli, "
+                + "ketuk tombol bahasa di atas untuk mengganti bahasa.\n"
                 + "• \"Daftar\" menampilkan semua teks asli + terjemahan, \"Salin\" menyalin terjemahan, "
                 + "\"Lens\" membuka gambar layar di Google untuk bertanya soal isinya.\n"
                 + "• Alternatif tanpa tombol mengambang: tile \"Terjemah Layar\" di panel notifikasi."));
 
         // ---- Unduh paket bahasa
-        root.addView(header("5. Siapkan paket bahasa (opsional)"));
+        root.addView(header("4. Siapkan paket bahasa (opsional)"));
         root.addView(note("Saat pertama kali menerjemahkan dari suatu bahasa, aplikasi mengunduh paket bahasa (±30 MB). "
                 + "Setelah itu terjemahan bekerja tanpa internet. Anda bisa mengunduhnya sekarang lewat Wi-Fi:"));
         LinearLayout dlRow = new LinearLayout(this);
@@ -224,6 +184,29 @@ public class MainActivity extends Activity {
                     });
         });
         return b;
+    }
+
+    private interface OnPick { void pick(String code); }
+
+    private Spinner languageSpinner(List<String> codes, String current, OnPick onPick) {
+        Spinner sp = new Spinner(this);
+        List<String> names = new ArrayList<>();
+        for (String c : codes) names.add(Langs.AUTO.equals(c) ? "Otomatis (deteksi)" : Langs.displayName(c));
+        ArrayAdapter<String> adapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, names);
+        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        sp.setAdapter(adapter);
+        int sel = codes.indexOf(current);
+        if (sel >= 0) sp.setSelection(sel);
+        sp.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            @Override
+            public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
+                onPick.pick(codes.get(position));
+            }
+
+            @Override
+            public void onNothingSelected(AdapterView<?> parent) { }
+        });
+        return sp;
     }
 
     private LinearLayout.LayoutParams weight() {

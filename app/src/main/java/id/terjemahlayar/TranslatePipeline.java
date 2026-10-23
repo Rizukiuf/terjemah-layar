@@ -13,22 +13,19 @@ import com.google.mlkit.nl.translate.Translation;
 import com.google.mlkit.nl.translate.Translator;
 import com.google.mlkit.nl.translate.TranslatorOptions;
 import com.google.mlkit.vision.common.InputImage;
-import com.google.mlkit.vision.text.Text;
-import com.google.mlkit.vision.text.TextRecognition;
-import com.google.mlkit.vision.text.TextRecognizer;
-import com.google.mlkit.vision.text.chinese.ChineseTextRecognizerOptions;
-import com.google.mlkit.vision.text.japanese.JapaneseTextRecognizerOptions;
-import com.google.mlkit.vision.text.korean.KoreanTextRecognizerOptions;
-import com.google.mlkit.vision.text.latin.TextRecognizerOptions;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+
+import id.terjemahlayar.LayoutAnalyzer.Group;
 
 /**
- * Baca teks dari gambar layar (OCR), deteksi bahasanya, lalu terjemahkan.
+ * Alur lengkap: baca teks (OCR) → susun jadi kalimat → deteksi bahasa → terjemahkan → hapus teks asli.
  * Semuanya berjalan di dalam HP; internet hanya dipakai sekali untuk mengunduh paket bahasa.
  * Semua callback dipanggil di thread utama.
  */
@@ -36,182 +33,269 @@ final class TranslatePipeline {
 
     interface Callback {
         void onStatus(String message);
-        void onDone(List<Item> items);
+        void onDone(Result result);
         void onError(String message);
     }
 
-    static final class Item {
-        final Rect box;
-        final String original;
-        final int lineCount;
-        String lang;
-        String translated;
+    static final class Result {
+        final List<Group> groups;
+        final String detected;
 
-        Item(Rect box, String original, int lineCount) {
-            this.box = box;
-            this.original = original;
-            this.lineCount = lineCount;
+        Result(List<Group> groups, String detected) {
+            this.groups = groups;
+            this.detected = detected;
         }
     }
 
     private final Handler main = new Handler(Looper.getMainLooper());
-    private final Map<String, Translator> translators = new HashMap<>();
+    private final OcrEngine ocr = new OcrEngine();
     private final LanguageIdentifier languageId = LanguageIdentification.getClient();
-    private TextRecognizer recognizer;
-    private String recognizerScript;
+    private final Map<String, Translator> translators = new HashMap<>();
+    private final ExecutorService worker = Executors.newSingleThreadExecutor();
+    private int generation;
 
-    void run(Bitmap bitmap, String script, String target, Callback cb) {
-        TextRecognizer r = recognizerFor(script);
-        r.process(InputImage.fromBitmap(bitmap, 0))
-                .addOnSuccessListener(text -> onText(text, script, target, cb))
-                .addOnFailureListener(e -> cb.onError("Gagal membaca teks: " + e.getMessage()));
-    }
+    // Hasil baca layar terakhir — dipakai ulang saat pengguna mengganti bahasa.
+    private Bitmap cacheBmp;
+    private String cacheKey, cacheScript;
+    private List<Group> cacheGroups;
 
-    private TextRecognizer recognizerFor(String script) {
-        if (recognizer != null && script.equals(recognizerScript)) return recognizer;
-        if (recognizer != null) recognizer.close();
-        switch (script) {
-            case Prefs.SCRIPT_CHINESE:
-                recognizer = TextRecognition.getClient(new ChineseTextRecognizerOptions.Builder().build());
-                break;
-            case Prefs.SCRIPT_JAPANESE:
-                recognizer = TextRecognition.getClient(new JapaneseTextRecognizerOptions.Builder().build());
-                break;
-            case Prefs.SCRIPT_KOREAN:
-                recognizer = TextRecognition.getClient(new KoreanTextRecognizerOptions.Builder().build());
-                break;
-            default:
-                recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS);
+    void warmUp() { ocr.warmUp(); }
+
+    void run(Bitmap bmp, String source, String target, Callback cb) {
+        final int gen = ++generation;
+        final String key = Langs.AUTO.equals(source) ? Langs.AUTO : Langs.scriptFor(source);
+        if (bmp == cacheBmp && key.equals(cacheKey) && cacheGroups != null) {
+            translate(gen, bmp, cacheGroups, cacheScript, source, target, cb);
+            return;
         }
-        recognizerScript = script;
-        return recognizer;
-    }
-
-    private static boolean isCjk(String script) {
-        return Prefs.SCRIPT_CHINESE.equals(script) || Prefs.SCRIPT_JAPANESE.equals(script);
-    }
-
-    private static String scriptDefaultLanguage(String script) {
-        switch (script) {
-            case Prefs.SCRIPT_CHINESE: return TranslateLanguage.CHINESE;
-            case Prefs.SCRIPT_JAPANESE: return TranslateLanguage.JAPANESE;
-            case Prefs.SCRIPT_KOREAN: return TranslateLanguage.KOREAN;
-            default: return TranslateLanguage.ENGLISH;
-        }
-    }
-
-    private static boolean hasLetter(String s) {
-        for (int i = 0; i < s.length(); ) {
-            int cp = s.codePointAt(i);
-            if (Character.isLetter(cp)) return true;
-            i += Character.charCount(cp);
-        }
-        return false;
-    }
-
-    private void onText(Text text, String script, String target, Callback cb) {
-        boolean cjk = isCjk(script);
-        List<Item> items = new ArrayList<>();
-        for (Text.TextBlock block : text.getTextBlocks()) {
-            Rect box = block.getBoundingBox();
-            if (box == null) continue;
-            StringBuilder sb = new StringBuilder();
-            int lines = 0;
-            for (Text.Line line : block.getLines()) {
-                String t = line.getText().trim();
-                if (t.isEmpty()) continue;
-                lines++;
-                if (sb.length() > 0 && !cjk) {
-                    // gabungkan kata yang terpotong tanda hubung di akhir baris
-                    if (sb.charAt(sb.length() - 1) == '-') sb.setLength(sb.length() - 1);
-                    else sb.append(' ');
+        ocr.recognize(bmp, source, new OcrEngine.Callback() {
+            @Override
+            public void onResult(com.google.mlkit.vision.text.Text text, String script) {
+                if (gen != generation) return;
+                List<Group> groups = LayoutAnalyzer.analyze(text, script);
+                Runnable next = () -> {
+                    cacheBmp = bmp;
+                    cacheKey = key;
+                    cacheScript = script;
+                    cacheGroups = groups;
+                    translate(gen, bmp, groups, script, source, target, cb);
+                };
+                if (Langs.SCRIPT_JAPANESE.equals(script) || Langs.SCRIPT_CHINESE.equals(script)) {
+                    reflowVertical(gen, bmp, groups, script, next);
+                } else {
+                    next.run();
                 }
-                sb.append(t);
             }
-            String joined = sb.toString().trim();
-            if (joined.isEmpty() || !hasLetter(joined)) continue;
-            items.add(new Item(box, joined, Math.max(1, lines)));
+
+            @Override
+            public void onError(Exception e) {
+                if (gen == generation) cb.onError("Gagal membaca teks: " + e.getMessage());
+            }
+        });
+    }
+
+    // ------------------------------------------------------------ teks vertikal
+
+    private void reflowVertical(int gen, Bitmap bmp, List<Group> groups, String script, Runnable then) {
+        // Kelompokkan teks Jepang/Mandarin yang berdekatan (satu gelembung / satu blok).
+        List<Group> cjk = new ArrayList<>();
+        for (Group g : groups) if (g.isCjk()) cjk.add(g);
+        if (cjk.isEmpty()) {
+            then.run();
+            return;
         }
-        if (items.isEmpty()) {
+        int n = cjk.size();
+        int[] parent = new int[n];
+        for (int i = 0; i < n; i++) parent[i] = i;
+        for (int i = 0; i < n; i++) {
+            for (int j = i + 1; j < n; j++) {
+                Group a = cjk.get(i), b = cjk.get(j);
+                float thr = 0.5f * Math.max(a.thickness, b.thickness);
+                if (LayoutAnalyzer.distance(a.bounds, b.bounds) <= thr) {
+                    int ra = root(parent, i), rb = root(parent, j);
+                    if (ra != rb) parent[rb] = ra;
+                }
+            }
+        }
+        Map<Integer, List<Group>> clusters = new HashMap<>();
+        for (int i = 0; i < n; i++) {
+            int r = root(parent, i);
+            List<Group> l = clusters.get(r);
+            if (l == null) { l = new ArrayList<>(); clusters.put(r, l); }
+            l.add(cjk.get(i));
+        }
+        final List<List<Group>> list = new ArrayList<>(clusters.values());
+
+        worker.execute(() -> {
+            List<VerticalReflow.Job> jobs = new ArrayList<>();
+            for (List<Group> c : list) {
+                Rect bounds = new Rect();
+                boolean force = false;
+                List<Float> th = new ArrayList<>();
+                for (Group g : c) {
+                    bounds.union(g.bounds);
+                    force |= g.vertical;
+                    th.add(g.thickness);
+                }
+                Collections.sort(th);
+                try {
+                    VerticalReflow.Job job = VerticalReflow.prepare(bmp, c, bounds, th.get(th.size() / 2), force);
+                    if (job != null) jobs.add(job);
+                } catch (RuntimeException ignored) {
+                    // biarkan hasil OCR biasa
+                }
+            }
+            main.post(() -> {
+                if (gen != generation) return;
+                if (jobs.isEmpty()) {
+                    then.run();
+                    return;
+                }
+                final String[] texts = new String[jobs.size()];
+                final int[] pending = {jobs.size()};
+                for (int i = 0; i < jobs.size(); i++) {
+                    final int idx = i;
+                    final VerticalReflow.Job job = jobs.get(i);
+                    ocr.get(script).process(InputImage.fromBitmap(job.tiled, 0)).addOnCompleteListener(t -> {
+                        if (t.isSuccessful()) {
+                            String s = job.parse(t.getResult());
+                            int[] c = Langs.count(s);
+                            if (c[1] + c[2] > 0) texts[idx] = s;
+                        }
+                        if (--pending[0] == 0) {
+                            if (gen != generation) return;
+                            for (int k = 0; k < jobs.size(); k++) {
+                                if (texts[k] == null) continue;
+                                VerticalReflow.Job jb = jobs.get(k);
+                                Group g = new Group();
+                                for (Rect col : jb.columns) g.lines.add(new LayoutAnalyzer.Line(col, "", -1, true));
+                                g.extraErase.addAll(jb.ruby);
+                                g.text = texts[k];
+                                g.vertical = true;
+                                g.centered = true;
+                                g.finish();
+                                groups.removeAll(jb.source);
+                                groups.add(g);
+                            }
+                            then.run();
+                        }
+                    });
+                }
+            });
+        });
+    }
+
+    private static int root(int[] p, int i) {
+        while (p[i] != i) { p[i] = p[p[i]]; i = p[i]; }
+        return i;
+    }
+
+    // ------------------------------------------------------------ bahasa
+
+    private void translate(int gen, Bitmap bmp, List<Group> groups, String script,
+                           String source, String target, Callback cb) {
+        List<Group> mainGroups = new ArrayList<>();
+        for (Group g : groups) {
+            g.lang = null;
+            g.translated = null;
+            if (!g.ruby) mainGroups.add(g);
+        }
+        if (mainGroups.isEmpty()) {
             cb.onError("Tidak ada teks yang terdeteksi di layar.");
             return;
         }
-        cb.onStatus("Menerjemahkan " + items.size() + " bagian teks…");
+        boolean auto = Langs.AUTO.equals(source);
+        if (!auto) {
+            for (Group g : mainGroups) g.lang = source;
+            translateAll(gen, bmp, groups, mainGroups, target, true, cb);
+            return;
+        }
 
-        final int[] pending = {items.size()};
-        for (Item item : items) {
-            languageId.identifyLanguage(item.original).addOnCompleteListener(task -> {
-                item.lang = task.isSuccessful() ? task.getResult() : LanguageIdentifier.UNDETERMINED_LANGUAGE_TAG;
-                if (--pending[0] == 0) translateAll(items, script, target, cb);
+        boolean screenKana = Langs.SCRIPT_JAPANESE.equals(script);
+        for (Group g : mainGroups) if (g.kana > 0) screenKana = true;
+        final List<Group> needId = new ArrayList<>();
+        for (Group g : mainGroups) {
+            if (g.hangul > 0 && g.hangul >= g.kana + g.han) g.lang = TranslateLanguage.KOREAN;
+            else if (g.kana > 0) g.lang = TranslateLanguage.JAPANESE;
+            else if (g.han > 0 && g.han >= g.latin) g.lang = screenKana ? TranslateLanguage.JAPANESE : TranslateLanguage.CHINESE;
+            else needId.add(g);
+        }
+        if (needId.isEmpty()) {
+            translateAll(gen, bmp, groups, mainGroups, target, false, cb);
+            return;
+        }
+        final String[] tags = new String[needId.size()];
+        final int[] pending = {needId.size()};
+        for (int i = 0; i < needId.size(); i++) {
+            final int idx = i;
+            languageId.identifyLanguage(needId.get(i).text).addOnCompleteListener(t -> {
+                tags[idx] = t.isSuccessful() ? t.getResult() : LanguageIdentifier.UNDETERMINED_LANGUAGE_TAG;
+                if (--pending[0] > 0) return;
+                if (gen != generation) return;
+                // Bahasa dominan dipakai untuk potongan pendek yang sulit dideteksi.
+                Map<String, Integer> weight = new HashMap<>();
+                for (int k = 0; k < needId.size(); k++) {
+                    String m = tags[k] == null ? null : TranslateLanguage.fromLanguageTag(tags[k]);
+                    if (m == null) continue;
+                    Integer w = weight.get(m);
+                    weight.put(m, (w == null ? 0 : w) + needId.get(k).text.length());
+                }
+                String dominant = null;
+                int best = -1;
+                for (Map.Entry<String, Integer> e : weight.entrySet()) {
+                    if (e.getValue() > best) { best = e.getValue(); dominant = e.getKey(); }
+                }
+                String fallback = dominant != null ? dominant : TranslateLanguage.ENGLISH;
+                for (int k = 0; k < needId.size(); k++) {
+                    Group g = needId.get(k);
+                    String m = tags[k] == null ? null : TranslateLanguage.fromLanguageTag(tags[k]);
+                    boolean confident = m != null && g.text.length() >= 12;
+                    g.lang = confident ? m : (m != null && m.equals(target) ? target : fallback);
+                }
+                translateAll(gen, bmp, groups, mainGroups, target, false, cb);
             });
         }
     }
 
-    private void translateAll(List<Item> items, String script, String target, Callback cb) {
-        // Bahasa dominan di layar dipakai untuk potongan teks yang terlalu pendek untuk dideteksi.
-        Map<String, Integer> weight = new HashMap<>();
-        for (Item it : items) {
-            String mapped = it.lang == null ? null : TranslateLanguage.fromLanguageTag(it.lang);
-            if (mapped == null) continue;
-            Integer w = weight.get(mapped);
-            weight.put(mapped, (w == null ? 0 : w) + it.original.length());
+    private void translateAll(int gen, Bitmap bmp, List<Group> all, List<Group> mainGroups,
+                              String target, boolean manual, Callback cb) {
+        Map<String, List<Group>> bySource = new HashMap<>();
+        for (Group g : mainGroups) {
+            if (g.lang == null || g.lang.equals(target)) continue;
+            List<Group> l = bySource.get(g.lang);
+            if (l == null) { l = new ArrayList<>(); bySource.put(g.lang, l); }
+            l.add(g);
         }
-        String dominant = null;
-        int best = -1;
-        for (Map.Entry<String, Integer> e : weight.entrySet()) {
-            if (e.getValue() > best) { best = e.getValue(); dominant = e.getKey(); }
-        }
-        // Jika yang dominan sudah bahasa tujuan, potongan pendek dianggap bahasa sesuai jenis huruf.
-        String fallback = (dominant == null || dominant.equals(target)) ? scriptDefaultLanguage(script) : dominant;
-
-        Map<String, List<Item>> bySource = new HashMap<>();
-        for (Item it : items) {
-            String mapped = it.lang == null ? null : TranslateLanguage.fromLanguageTag(it.lang);
-            boolean confident = mapped != null && it.original.length() >= 12;
-            String src = confident ? mapped : (mapped != null && mapped.equals(target) ? target : fallback);
-            it.lang = src;
-            if (src.equals(target)) continue; // sudah dalam bahasa tujuan → biarkan teks asli terlihat
-            List<Item> list = bySource.get(src);
-            if (list == null) { list = new ArrayList<>(); bySource.put(src, list); }
-            list.add(it);
-        }
-
         if (bySource.isEmpty()) {
-            cb.onError("Teks di layar sepertinya sudah dalam bahasa tujuan.");
+            cb.onError("Teks di layar sudah dalam bahasa " + Langs.displayName(target)
+                    + ". Ganti bahasa tujuan bila perlu.");
             return;
         }
-
         int total = 0;
-        for (List<Item> l : bySource.values()) total += l.size();
+        for (List<Group> l : bySource.values()) total += l.size();
         final int[] pending = {total};
         final String[] lastError = {null};
         final Runnable finish = () -> {
-            List<Item> done = new ArrayList<>();
-            for (Item it : items) if (it.translated != null) done.add(it);
-            if (done.isEmpty()) {
-                cb.onError("Gagal menerjemahkan. " + (lastError[0] != null ? lastError[0] + " " : "")
-                        + "Pastikan internet aktif saat pertama kali memakai bahasa ini (untuk mengunduh paket bahasa).");
-            } else {
-                cb.onDone(done);
-            }
+            if (gen != generation) return;
+            render(gen, bmp, all, mainGroups, manual, lastError[0], cb);
         };
-
-        for (Map.Entry<String, List<Item>> e : bySource.entrySet()) {
+        for (Map.Entry<String, List<Group>> e : bySource.entrySet()) {
             final String src = e.getKey();
-            final List<Item> list = e.getValue();
+            final List<Group> list = e.getValue();
             final Translator tr = translatorFor(src, target);
             final boolean[] ready = {false};
-            // Jika model belum siap setelah 1,5 detik, berarti sedang diunduh — beri tahu pengguna.
             main.postDelayed(() -> {
-                if (!ready[0]) cb.onStatus("Mengunduh paket bahasa " + displayName(src) + " → "
-                        + displayName(target) + " (sekali saja, ±30 MB)…");
+                if (!ready[0] && gen == generation) {
+                    cb.onStatus("Mengunduh paket bahasa " + Langs.displayName(src) + " → "
+                            + Langs.displayName(target) + " (sekali saja, ±30 MB)…");
+                }
             }, 1500);
             tr.downloadModelIfNeeded(new DownloadConditions.Builder().build())
                     .addOnSuccessListener(v -> {
                         ready[0] = true;
-                        for (Item it : list) {
-                            tr.translate(it.original).addOnCompleteListener(t -> {
-                                if (t.isSuccessful()) it.translated = t.getResult();
+                        for (Group g : list) {
+                            tr.translate(g.text).addOnCompleteListener(t -> {
+                                if (t.isSuccessful()) g.translated = t.getResult();
                                 else if (t.getException() != null) lastError[0] = t.getException().getMessage();
                                 if (--pending[0] == 0) finish.run();
                             });
@@ -219,11 +303,45 @@ final class TranslatePipeline {
                     })
                     .addOnFailureListener(ex -> {
                         ready[0] = true;
-                        lastError[0] = "Paket bahasa " + displayName(src) + " gagal diunduh.";
+                        lastError[0] = "Paket bahasa " + Langs.displayName(src) + " gagal diunduh.";
                         pending[0] -= list.size();
                         if (pending[0] == 0) finish.run();
                     });
         }
+    }
+
+    private void render(int gen, Bitmap bmp, List<Group> all, List<Group> mainGroups, boolean manual,
+                        String lastError, Callback cb) {
+        final List<Group> shown = new ArrayList<>();
+        Map<String, Integer> weight = new HashMap<>();
+        boolean anyJa = false;
+        for (Group g : mainGroups) {
+            if (g.translated == null || g.translated.trim().isEmpty()) continue;
+            shown.add(g);
+            Integer w = weight.get(g.lang);
+            weight.put(g.lang, (w == null ? 0 : w) + g.text.length());
+            if (TranslateLanguage.JAPANESE.equals(g.lang)) anyJa = true;
+        }
+        if (shown.isEmpty()) {
+            cb.onError("Gagal menerjemahkan. " + (lastError != null ? lastError + " " : "")
+                    + "Pastikan internet aktif saat pertama kali memakai bahasa ini.");
+            return;
+        }
+        if (anyJa) for (Group g : all) if (g.ruby) shown.add(g);
+        String dom = null;
+        int best = -1;
+        for (Map.Entry<String, Integer> e : weight.entrySet()) {
+            if (e.getValue() > best) { best = e.getValue(); dom = e.getKey(); }
+        }
+        final String detected = dom;
+        worker.execute(() -> {
+            for (Group g : shown) {
+                try { Eraser.erase(bmp, g); } catch (RuntimeException ignored) { }
+            }
+            main.post(() -> {
+                if (gen == generation) cb.onDone(new Result(shown, detected));
+            });
+        });
     }
 
     private Translator translatorFor(String src, String target) {
@@ -239,19 +357,13 @@ final class TranslatePipeline {
         return t;
     }
 
-    static String displayName(String code) {
-        Locale l = Locale.forLanguageTag(code);
-        String name = l.getDisplayLanguage(Locale.forLanguageTag("id"));
-        if (name == null || name.isEmpty()) return code;
-        return name.substring(0, 1).toUpperCase(Locale.ROOT) + name.substring(1);
-    }
-
     void close() {
+        generation++;
         main.removeCallbacksAndMessages(null);
+        worker.shutdownNow();
         for (Translator t : translators.values()) t.close();
         translators.clear();
-        if (recognizer != null) recognizer.close();
-        recognizer = null;
+        ocr.close();
         languageId.close();
     }
 }

@@ -2,7 +2,10 @@
 
 Aplikasi Android untuk menerjemahkan isi layar **dengan satu ketukan**, tanpa tekan-tahan bar navigasi.
 
-- Tombol mengambang **文A** di tepi layar → ketuk → teks di layar langsung tertimpa terjemahannya.
+- Tombol mengambang **文A** di tepi layar → ketuk → teks asli dihapus (diisi warna latar di sekitarnya) dan terjemahan ditulis di posisi & ukuran yang sama, tanpa kotak — menyatu seperti Google Lens.
+- **Bahasa otomatis**: mengenali Inggris, Jepang, Korea, Mandarin, dan bahasa berhuruf Latin lain. Bahasa bisa diganti langsung di layar hasil (tombol di atas) tanpa mengambil layar ulang.
+- **Baris digabung jadi kalimat**: paragraf dan gelembung komik/manhwa yang terpecah beberapa baris diterjemahkan sebagai satu kalimat.
+- **Manga vertikal**: kolom dibaca atas→bawah, kanan→kiri; furigana diabaikan.
 - Membaca teks (OCR) dan menerjemahkan **di dalam HP** (Google ML Kit). Internet hanya dipakai sekali untuk mengunduh paket bahasa (±30 MB per bahasa).
 - Ketuk hasil = tutup · tahan = intip teks asli · **Daftar** = semua teks asli + terjemahan · **Salin** · **Lens** = kirim gambar layar ke Google untuk bertanya soal isinya.
 - Alternatif pemicu: tile "Terjemah Layar" di Pengaturan Cepat (panel notifikasi), atau tombol aksesibilitas sistem.
@@ -27,7 +30,7 @@ APK ada di `app/build/outputs/apk/debug/app-debug.apk`.
 2. Buka aplikasi **Terjemah Layar** → **Buka pengaturan Aksesibilitas** → pilih **Terjemah Layar** → nyalakan.
 3. Jika tombol tidak bisa dinyalakan / muncul "Setelan terbatas":
    **Info Aplikasi** → ⋮ (kanan atas) → **Izinkan setelan terbatas** → ulangi langkah 2.
-4. Pilih bahasa tujuan (default: Indonesia) dan jenis huruf teks sumber (Latin / Mandarin / Jepang / Korea).
+4. Bahasa tujuan bawaan: Indonesia; bahasa sumber: Otomatis. Keduanya bisa diganti di aplikasi atau langsung di layar hasil.
 5. Agar tombol tidak berhenti sendiri di HiOS: **Info Aplikasi → Baterai → Tanpa batasan**, dan kunci aplikasi di daftar aplikasi terbaru.
 
 ## Catatan
