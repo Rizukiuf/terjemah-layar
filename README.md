@@ -2,6 +2,10 @@
 
 Aplikasi Android untuk menerjemahkan isi layar **dengan satu ketukan**, tanpa tekan-tahan bar navigasi.
 
+**Mode Google (bawaan):** ketuk tombol 文A → aplikasi menekan lama bar navigasi untuk Anda (membuka Circle to Search milik Google) lalu menekan tombol "Terjemahkan" secara otomatis — hasilnya persis terjemahan Google. Jika Circle to Search tidak terbuka, aplikasi otomatis memakai Google Lens. Mode lain: **Google Lens** dan **Offline di HP** (bisa dipilih di aplikasi).
+
+Fitur mode Offline:
+
 - Tombol mengambang **文A** di tepi layar → ketuk → teks asli dihapus (diisi warna latar di sekitarnya) dan terjemahan ditulis di posisi & ukuran yang sama, tanpa kotak — menyatu seperti Google Lens.
 - **Bahasa otomatis**: mengenali Inggris, Jepang, Korea, Mandarin, dan bahasa berhuruf Latin lain. Bahasa bisa diganti langsung di layar hasil (tombol di atas) tanpa mengambil layar ulang.
 - **Baris digabung jadi kalimat**: paragraf dan gelembung komik/manhwa yang terpecah beberapa baris diterjemahkan sebagai satu kalimat.

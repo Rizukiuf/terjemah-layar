@@ -10,8 +10,8 @@ android {
         applicationId 'id.terjemahlayar'
         minSdk 30          // Android 11+: dibutuhkan untuk mengambil tangkapan layar dari layanan aksesibilitas
         targetSdk 35
-        versionCode 2
-        versionName '1.1'
+        versionCode 3
+        versionName '1.2'
         ndk {
             // HP modern (termasuk Tecno Camon 40 Pro) memakai arm64. Membatasi ini membuat APK jauh lebih kecil.
             abiFilters 'arm64-v8a'

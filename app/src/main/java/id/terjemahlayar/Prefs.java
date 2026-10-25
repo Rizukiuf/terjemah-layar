@@ -5,6 +5,13 @@ import android.content.SharedPreferences;
 
 /** Pengaturan sederhana yang disimpan di HP. */
 final class Prefs {
+    /** Circle to Search Google + tekan "Terjemahkan" otomatis. */
+    static final String MODE_GOOGLE = "google";
+    /** Gambar layar dibuka di Google Lens + tekan "Terjemahkan" otomatis. */
+    static final String MODE_LENS = "lens";
+    /** Terjemahan di dalam HP tanpa internet (ML Kit). */
+    static final String MODE_OFFLINE = "offline";
+
     private Prefs() {}
 
     private static SharedPreferences sp(Context c) {
@@ -18,6 +25,9 @@ final class Prefs {
     /** Bahasa tujuan terjemahan (kode ML Kit, mis. "id"). */
     static String target(Context c) { return sp(c).getString("target", "id"); }
     static void setTarget(Context c, String v) { sp(c).edit().putString("target", v).apply(); }
+
+    static String mode(Context c) { return sp(c).getString("mode", MODE_GOOGLE); }
+    static void setMode(Context c, String v) { sp(c).edit().putString("mode", v).apply(); }
 
     static boolean bubbleEnabled(Context c) { return sp(c).getBoolean("bubble", true); }
     static void setBubbleEnabled(Context c, boolean v) { sp(c).edit().putBoolean("bubble", v).apply(); }

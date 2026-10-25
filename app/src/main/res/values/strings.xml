@@ -3,5 +3,5 @@
     <string name="app_name">Terjemah Layar</string>
     <string name="service_label">Terjemah Layar</string>
     <string name="tile_label">Terjemah Layar</string>
-    <string name="service_description">Menampilkan tombol mengambang. Saat diketuk, aplikasi mengambil gambar layar, membaca teksnya di dalam HP, lalu menampilkan terjemahannya di atas teks asli. Gambar layar tidak dikirim ke mana pun, kecuali Anda sendiri menekan tombol \"Lens\".</string>
+    <string name="service_description">Menampilkan tombol mengambang 文A. Saat diketuk, aplikasi menekan lama bar navigasi untuk membuka Circle to Search milik Google lalu menekan tombol \"Terjemahkan\" secara otomatis (atau membuka Google Lens / terjemahan offline, sesuai pilihan). Aplikasi hanya membaca jendela aplikasi Google untuk menemukan tombol \"Terjemahkan\"; isi layar aplikasi lain tidak dibaca atau dikirim ke mana pun oleh aplikasi ini.</string>
 </resources>

@@ -19,6 +19,8 @@ import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.LinearLayout;
+import android.widget.RadioButton;
+import android.widget.RadioGroup;
 import android.widget.ScrollView;
 import android.widget.Spinner;
 import android.widget.TextView;
@@ -76,7 +78,33 @@ public class MainActivity extends Activity {
         root.addView(appInfo);
 
         // ---- Langkah 2: bahasa
-        root.addView(header("2. Bahasa"));
+        root.addView(header("2. Cara menerjemahkan"));
+        RadioGroup modes = new RadioGroup(this);
+        String[][] modeOptions = {
+                {Prefs.MODE_GOOGLE, "Google — Circle to Search (disarankan)\nSama seperti menekan lama bar bawah, tetapi cukup sekali ketuk; tombol \"Terjemahkan\" ditekan otomatis."},
+                {Prefs.MODE_LENS, "Google Lens\nGambar layar dibuka di Google Lens lalu langsung diterjemahkan."},
+                {Prefs.MODE_OFFLINE, "Offline di HP\nTanpa internet, tetapi kualitas terjemahan di bawah Google."},
+        };
+        String currentMode = Prefs.mode(this);
+        for (String[] o : modeOptions) {
+            RadioButton rb = new RadioButton(this);
+            rb.setText(o[1]);
+            rb.setId(View.generateViewId());
+            rb.setTag(o[0]);
+            rb.setPadding(rb.getPaddingLeft(), dp(6), 0, dp(6));
+            modes.addView(rb);
+            if (o[0].equals(currentMode)) rb.setChecked(true);
+        }
+        modes.setOnCheckedChangeListener((group, checkedId) -> {
+            View rb = group.findViewById(checkedId);
+            if (rb != null) Prefs.setMode(this, (String) rb.getTag());
+        });
+        root.addView(modes);
+        root.addView(note("Mode Google membutuhkan aplikasi Google dengan Circle to Search aktif. Jika Circle to Search "
+                + "tidak terbuka, aplikasi otomatis memakai Google Lens. Bahasa hasil terjemahan Google mengikuti "
+                + "pengaturan Google (bisa diganti di layar Google)."));
+
+        root.addView(header("Bahasa (khusus mode Offline)"));
         root.addView(note("Dari (bahasa teks di layar):"));
         root.addView(languageSpinner(Langs.sourceOptions(), Prefs.source(this),
                 code -> Prefs.setSource(this, code)));
@@ -87,7 +115,7 @@ public class MainActivity extends Activity {
                 + "Bahasa juga bisa diganti langsung di layar hasil terjemahan lewat tombol di bagian atas."));
 
         // ---- Langkah 4: tombol & pintasan
-        root.addView(header("3. Cara memicu terjemahan"));
+        root.addView(header("3. Tombol & pintasan"));
         CheckBox bubbleBox = new CheckBox(this);
         bubbleBox.setText("Tampilkan tombol mengambang 文A");
         bubbleBox.setChecked(Prefs.bubbleEnabled(this));
@@ -104,16 +132,14 @@ public class MainActivity extends Activity {
             addTile.setOnClickListener(v -> requestAddTile());
             root.addView(addTile);
         }
-        root.addView(note("• Ketuk tombol 文A → layar langsung diterjemahkan.\n"
+        root.addView(note("• Ketuk tombol 文A → layar langsung diterjemahkan (mode Google: Circle to Search terbuka "
+                + "dan tombol \"Terjemahkan\" ditekan otomatis).\n"
                 + "• Geser tombol untuk memindahkannya. Tahan tombol untuk membuka halaman ini.\n"
-                + "• Pada hasil terjemahan: ketuk di mana saja untuk menutup, tahan untuk mengintip teks asli, "
-                + "ketuk tombol bahasa di atas untuk mengganti bahasa.\n"
-                + "• \"Daftar\" menampilkan semua teks asli + terjemahan, \"Salin\" menyalin terjemahan, "
-                + "\"Lens\" membuka gambar layar di Google untuk bertanya soal isinya.\n"
+                + "• Mode Offline: ketuk hasil untuk menutup, tahan untuk mengintip teks asli, tombol di atas untuk ganti bahasa.\n"
                 + "• Alternatif tanpa tombol mengambang: tile \"Terjemah Layar\" di panel notifikasi."));
 
         // ---- Unduh paket bahasa
-        root.addView(header("4. Siapkan paket bahasa (opsional)"));
+        root.addView(header("Paket bahasa offline (opsional)"));
         root.addView(note("Saat pertama kali menerjemahkan dari suatu bahasa, aplikasi mengunduh paket bahasa (±30 MB). "
                 + "Setelah itu terjemahan bekerja tanpa internet. Anda bisa mengunduhnya sekarang lewat Wi-Fi:"));
         LinearLayout dlRow = new LinearLayout(this);

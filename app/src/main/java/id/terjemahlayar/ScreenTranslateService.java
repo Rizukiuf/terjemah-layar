@@ -2,6 +2,7 @@ package id.terjemahlayar;
 
 import android.accessibilityservice.AccessibilityButtonController;
 import android.accessibilityservice.AccessibilityService;
+import android.accessibilityservice.GestureDescription;
 import android.annotation.SuppressLint;
 import android.content.ActivityNotFoundException;
 import android.content.ClipData;
@@ -9,6 +10,8 @@ import android.content.ClipboardManager;
 import android.content.Intent;
 import android.graphics.Bitmap;
 import android.graphics.Color;
+import android.graphics.Insets;
+import android.graphics.Path;
 import android.graphics.PixelFormat;
 import android.graphics.Rect;
 import android.graphics.Typeface;
@@ -17,14 +20,19 @@ import android.hardware.HardwareBuffer;
 import android.net.Uri;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.util.TypedValue;
 import android.view.Display;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewConfiguration;
+import android.view.WindowInsets;
 import android.view.WindowManager;
+import android.view.WindowMetrics;
 import android.view.accessibility.AccessibilityEvent;
+import android.view.accessibility.AccessibilityNodeInfo;
+import android.view.accessibility.AccessibilityWindowInfo;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -32,11 +40,15 @@ import androidx.core.content.FileProvider;
 
 import java.io.File;
 import java.io.FileOutputStream;
+import java.util.ArrayDeque;
 import java.util.List;
 
 /**
- * Layanan aksesibilitas: menampilkan tombol mengambang, mengambil gambar layar saat tombol diketuk,
- * lalu menampilkan hasil terjemahan di atas layar.
+ * Layanan aksesibilitas dengan tombol mengambang. Saat diketuk:
+ * - mode Google: menekan lama bar navigasi (membuka Circle to Search) lalu menekan "Terjemahkan" otomatis,
+ *   dengan cadangan Google Lens bila Circle to Search tidak terbuka;
+ * - mode Lens: gambar layar dibuka di Google Lens lalu "Terjemahkan" ditekan otomatis;
+ * - mode Offline: terjemahan di dalam HP (ML Kit) ditampilkan di atas layar.
  */
 public class ScreenTranslateService extends AccessibilityService {
 
@@ -56,6 +68,17 @@ public class ScreenTranslateService extends AccessibilityService {
     private Toast toast;
 
     private AccessibilityButtonController.AccessibilityButtonCallback a11yButtonCallback;
+
+    static final String GOOGLE_PKG = "com.google.android.googlequicksearchbox";
+    /** Lama tekan bar navigasi. Pengguna tidak perlu menahan — aplikasi yang menekannya. */
+    private static final long LONG_PRESS_MS = 1000;
+
+    // Pemantauan jendela Google (Circle to Search / Lens)
+    private final Runnable poll = this::pollGoogle;
+    private boolean watchFromCts, seenGoogle, clicked;
+    private long watchStart, lastSeen;
+    /** Jendela Google yang sudah terbuka sebelum tombol diketuk — diabaikan. */
+    private final java.util.Set<Integer> preGoogle = new java.util.HashSet<>();
 
     @Override
     protected void onServiceConnected() {
@@ -109,6 +132,7 @@ public class ScreenTranslateService extends AccessibilityService {
             pipeline.close();
             pipeline = null;
         }
+        main.removeCallbacks(poll);
         main.removeCallbacksAndMessages(null);
     }
 
@@ -251,31 +275,179 @@ public class ScreenTranslateService extends AccessibilityService {
             return;
         }
         busy = true;
+        snapshotGoogleWindows();
+        // Sembunyikan tombol agar tidak ikut tertangkap di gambar layar.
         if (bubble != null) bubble.setVisibility(View.INVISIBLE);
-        // Beri waktu satu-dua frame agar tombol benar-benar hilang dari gambar layar.
-        main.postDelayed(this::capture, 120);
+        String mode = Prefs.mode(this);
+        if (Prefs.MODE_GOOGLE.equals(mode)) main.postDelayed(this::triggerCircleToSearch, 120);
+        else if (Prefs.MODE_LENS.equals(mode)) main.postDelayed(() -> capture(true), 120);
+        else main.postDelayed(() -> capture(false), 120);
     }
 
-    private void capture() {
+    // ---------------------------------------------------------------- mode Google
+
+    /** Tekan lama bar navigasi (sama seperti jari Anda) untuk membuka Circle to Search. */
+    private void triggerCircleToSearch() {
+        WindowMetrics m = wm.getCurrentWindowMetrics();
+        Rect b = m.getBounds();
+        Insets nav = m.getWindowInsets().getInsets(WindowInsets.Type.navigationBars());
+        float x = b.width() / 2f;
+        float y = b.height() - Math.max(nav.bottom / 2f, dp(8));
+        y = Math.min(y, b.height() - 2);
+        Path path = new Path();
+        path.moveTo(x, y);
+        GestureDescription g = new GestureDescription.Builder()
+                .addStroke(new GestureDescription.StrokeDescription(path, 0, LONG_PRESS_MS))
+                .build();
+        boolean ok = dispatchGesture(g, new GestureResultCallback() {
+            @Override
+            public void onCompleted(GestureDescription gestureDescription) {
+                startWatch(true);
+            }
+
+            @Override
+            public void onCancelled(GestureDescription gestureDescription) {
+                capture(true);
+            }
+        }, main);
+        if (!ok) capture(true);
+    }
+
+    private void startWatch(boolean fromCts) {
+        main.removeCallbacks(poll);
+        watchFromCts = fromCts;
+        watchStart = SystemClock.uptimeMillis();
+        seenGoogle = false;
+        clicked = false;
+        main.postDelayed(poll, 250);
+    }
+
+    /** Pantau jendela Google: tekan "Terjemahkan" begitu muncul, tampilkan tombol lagi setelah ditutup. */
+    private void pollGoogle() {
+        long now = SystemClock.uptimeMillis();
+        AccessibilityNodeInfo root = googleRoot();
+        if (root != null) {
+            seenGoogle = true;
+            lastSeen = now;
+            if (!clicked && now - watchStart < 8000) clicked = clickTranslate(root);
+        } else if (!seenGoogle) {
+            if (now - watchStart > (watchFromCts ? 2500 : 8000)) {
+                if (watchFromCts) {
+                    // Circle to Search tidak terbuka di HP ini → pakai Google Lens.
+                    main.removeCallbacks(poll);
+                    showToast("Circle to Search tidak terbuka, memakai Google Lens…", false);
+                    capture(true);
+                } else {
+                    endWatch();
+                }
+                return;
+            }
+        } else if (now - lastSeen > 1000) {
+            endWatch();
+            return;
+        }
+        main.postDelayed(poll, clicked ? 700 : 250);
+    }
+
+    private void endWatch() {
+        main.removeCallbacks(poll);
+        busy = false;
+        if (bubble != null) bubble.setVisibility(View.VISIBLE);
+    }
+
+    private void snapshotGoogleWindows() {
+        preGoogle.clear();
+        try {
+            for (AccessibilityWindowInfo w : getWindows()) {
+                AccessibilityNodeInfo r = w.getRoot();
+                if (r != null && r.getPackageName() != null && GOOGLE_PKG.contentEquals(r.getPackageName())) preGoogle.add(w.getId());
+            }
+        } catch (RuntimeException ignored) { }
+    }
+
+    private AccessibilityNodeInfo googleRoot() {
+        try {
+            for (AccessibilityWindowInfo w : getWindows()) {
+                if (preGoogle.contains(w.getId())) continue;
+                AccessibilityNodeInfo r = w.getRoot();
+                if (r != null && r.getPackageName() != null && GOOGLE_PKG.contentEquals(r.getPackageName())) return r;
+            }
+        } catch (RuntimeException ignored) { }
+        return null;
+    }
+
+    /** Cari tombol "Terjemahkan"/"Translate" di jendela Google lalu tekan. */
+    private boolean clickTranslate(AccessibilityNodeInfo root) {
+        ArrayDeque<AccessibilityNodeInfo> q = new ArrayDeque<>();
+        q.add(root);
+        int seen = 0;
+        while (!q.isEmpty() && seen++ < 3000) {
+            AccessibilityNodeInfo n = q.poll();
+            if (n == null) continue;
+            String id = n.getViewIdResourceName();
+            boolean match = isTranslateLabel(n.getText()) || isTranslateLabel(n.getContentDescription())
+                    || (id != null && id.toLowerCase(java.util.Locale.ROOT).contains("translate"));
+            if (match && n.isVisibleToUser() && press(n)) return true;
+            for (int i = 0; i < n.getChildCount(); i++) {
+                AccessibilityNodeInfo c = n.getChild(i);
+                if (c != null) q.add(c);
+            }
+        }
+        return false;
+    }
+
+    private static boolean isTranslateLabel(CharSequence cs) {
+        if (cs == null) return false;
+        String s = cs.toString().trim().toLowerCase(java.util.Locale.ROOT);
+        if (s.isEmpty() || s.length() > 24) return false;
+        return s.equals("terjemahkan") || s.equals("terjemah") || s.equals("terjemahan")
+                || s.equals("translate") || s.equals("translation")
+                || s.startsWith("terjemahkan ") || s.startsWith("translate ");
+    }
+
+    private boolean press(AccessibilityNodeInfo n) {
+        AccessibilityNodeInfo c = n;
+        for (int up = 0; c != null && !c.isClickable() && up < 5; up++) c = c.getParent();
+        if (c != null && c.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return true;
+        Rect r = new Rect();
+        n.getBoundsInScreen(r);
+        if (r.isEmpty()) return false;
+        Path p = new Path();
+        p.moveTo(r.exactCenterX(), r.exactCenterY());
+        return dispatchGesture(new GestureDescription.Builder()
+                .addStroke(new GestureDescription.StrokeDescription(p, 0, 60)).build(), null, null);
+    }
+
+    // ---------------------------------------------------------------- gambar layar (Lens / Offline)
+
+    private void capture(boolean forLens) {
         takeScreenshot(Display.DEFAULT_DISPLAY, getMainExecutor(), new TakeScreenshotCallback() {
             @Override
             public void onSuccess(ScreenshotResult result) {
-                if (bubble != null) bubble.setVisibility(View.VISIBLE);
                 HardwareBuffer hb = result.getHardwareBuffer();
                 Bitmap hw = Bitmap.wrapHardwareBuffer(hb, result.getColorSpace());
                 Bitmap bmp = hw != null ? hw.copy(Bitmap.Config.ARGB_8888, false) : null;
                 hb.close();
                 if (bmp == null) {
+                    if (bubble != null) bubble.setVisibility(View.VISIBLE);
                     fail("Gagal memproses gambar layar.");
                     return;
                 }
                 lastShot = bmp;
+                if (forLens) {
+                    // Tombol tetap disembunyikan selama Google Lens terbuka.
+                    openInLens();
+                    startWatch(false);
+                    return;
+                }
+                if (bubble != null) bubble.setVisibility(View.VISIBLE);
                 setBubbleBusy(true);
                 runPipeline(bmp);
             }
 
             @Override
             public void onFailure(int errorCode) {
+                main.removeCallbacks(poll);
                 if (bubble != null) bubble.setVisibility(View.VISIBLE);
                 if (errorCode == ERROR_TAKE_SCREENSHOT_SECURE_WINDOW) {
                     fail("Aplikasi ini melarang tangkapan layar (mis. aplikasi bank), jadi tidak bisa diterjemahkan.");
@@ -365,7 +537,11 @@ public class ScreenTranslateService extends AccessibilityService {
             @Override
             public void onLens() {
                 removeOverlay();
+                busy = true;
+                snapshotGoogleWindows();
+                if (bubble != null) bubble.setVisibility(View.INVISIBLE);
                 openInLens();
+                startWatch(false);
             }
         });
         overlay.setResult(result);
@@ -426,7 +602,16 @@ public class ScreenTranslateService extends AccessibilityService {
         send.putExtra(Intent.EXTRA_STREAM, uri);
         send.setClipData(ClipData.newRawUri("layar", uri));
         send.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK);
-        Intent toGoogle = new Intent(send).setPackage("com.google.android.googlequicksearchbox");
+        Intent toGoogle = new Intent(send).setPackage(GOOGLE_PKG);
+        // Aplikasi Google punya beberapa tujuan berbagi; pilih yang Lens agar tidak muncul pilihan.
+        try {
+            for (android.content.pm.ResolveInfo ri : getPackageManager().queryIntentActivities(toGoogle, 0)) {
+                if (ri.activityInfo != null && ri.activityInfo.name.toLowerCase(java.util.Locale.ROOT).contains("lens")) {
+                    toGoogle.setClassName(GOOGLE_PKG, ri.activityInfo.name);
+                    break;
+                }
+            }
+        } catch (RuntimeException ignored) { }
         try {
             startActivity(toGoogle);
         } catch (ActivityNotFoundException e) {
