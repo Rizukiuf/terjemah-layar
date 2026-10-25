@@ -352,8 +352,13 @@ final class ResultOverlay extends FrameLayout {
                 }
                 float t = Math.max(1, g.thickness);
                 RectF area = new RectF(g.bounds);
-                if (g.vertical) area.inset(-0.35f * t, -0.1f * t);
-                else area.inset(-0.08f * t, -0.08f * t);
+                if (g.free != null && g.free.width() >= g.bounds.width() && g.free.height() >= g.bounds.height()) {
+                    area = new RectF(g.free);           // seluruh bagian kosong gelembung
+                } else if (g.vertical) {
+                    area.inset(-0.35f * t, -0.1f * t);
+                } else {
+                    area.inset(-0.08f * t, -0.08f * t);
+                }
                 if (area.left < 0) area.left = 0;
                 if (area.top < 0) area.top = 0;
 

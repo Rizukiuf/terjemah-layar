@@ -39,6 +39,8 @@ import java.util.List;
 public class MainActivity extends Activity {
 
     private TextView status;
+    private CheckBox bubbleBox;
+    private Button offButton;
     private Button enableButton;
 
     @Override
@@ -116,7 +118,7 @@ public class MainActivity extends Activity {
 
         // ---- Langkah 4: tombol & pintasan
         root.addView(header("3. Tombol & pintasan"));
-        CheckBox bubbleBox = new CheckBox(this);
+        bubbleBox = new CheckBox(this);
         bubbleBox.setText("Tampilkan tombol mengambang 文A");
         bubbleBox.setChecked(Prefs.bubbleEnabled(this));
         bubbleBox.setOnCheckedChangeListener((b, checked) -> {
@@ -125,6 +127,18 @@ public class MainActivity extends Activity {
             if (s != null) s.applyPrefs();
         });
         root.addView(bubbleBox);
+        offButton = new Button(this);
+        offButton.setText("Matikan Terjemah Layar sepenuhnya");
+        offButton.setOnClickListener(v -> {
+            ScreenTranslateService s = ScreenTranslateService.get();
+            if (s != null) s.turnOff();
+            v.postDelayed(this::onResume, 600);
+        });
+        root.addView(offButton);
+        root.addView(note("• Tahan tombol 文A untuk membuka menu: Buka aplikasi · Sembunyikan tombol · Matikan.\n"
+                + "• \"Sembunyikan\": layanan diam total (tidak memakai baterai), tombol bisa dimunculkan lagi di sini "
+                + "dan tile Pengaturan Cepat tetap bisa dipakai.\n"
+                + "• \"Matikan\": layanan berhenti sepenuhnya; untuk memakai lagi, aktifkan dari langkah 1."));
 
         if (Build.VERSION.SDK_INT >= 33) {
             Button addTile = new Button(this);
@@ -166,6 +180,8 @@ public class MainActivity extends Activity {
         status.setText(on ? "Status: AKTIF ✓" : "Status: belum aktif");
         status.setTextColor(on ? 0xFF188038 : 0xFFD93025);
         enableButton.setText(on ? "Pengaturan Aksesibilitas" : "Buka pengaturan Aksesibilitas");
+        bubbleBox.setChecked(Prefs.bubbleEnabled(this));
+        offButton.setVisibility(on ? View.VISIBLE : View.GONE);
     }
 
     private void requestAddTile() {

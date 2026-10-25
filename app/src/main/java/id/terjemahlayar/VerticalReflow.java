@@ -81,9 +81,20 @@ final class VerticalReflow {
         int[] px = new int[W * H];
         src.getPixels(px, 0, W, region.left, region.top, W, H);
         int bg = Eraser.ringMedian(src, region);
+        // Tentukan warna tinta: gelap di atas terang (umumnya) atau terang di atas gelap.
+        // Teks hitam berpinggiran putih di atas latar abu-abu hanya diambil bagian gelapnya.
+        int bgGray = gray(bg);
+        int darkN = 0, lightN = 0;
+        for (int c : px) {
+            int d = gray(c) - bgGray;
+            if (d < -60) darkN++;
+            else if (d > 60) lightN++;
+        }
+        boolean darkInk = !(bgGray < 70 || (darkN < 0.01f * px.length && lightN > darkN));
         boolean[] ink = new boolean[W * H];
-        for (int i = 0; i < px.length; i++) ink[i] = Eraser.dist(px[i], bg) > 70;
+        for (int i = 0; i < px.length; i++) ink[i] = isInk(px[i], bgGray, darkInk);
         removeBorderComponents(ink, W, H);
+        removeSpecks(ink, W, H, Math.max(2, Math.round(0.12f * sGuess)));
 
         int[] colInk = new int[W], rowInk = new int[H];
         for (int y = 0; y < H; y++) {
@@ -123,6 +134,8 @@ final class VerticalReflow {
             if (last != null && r[0] - last[1] <= 0.4f * sGuess && r[1] - last[0] <= 1.15f * sGuess) last[1] = r[1];
             else colRuns.add(new int[]{r[0], r[1]});
         }
+        // Kolom yang saling menempel (tanpa celah) dibelah sesuai lebar satu huruf.
+        colRuns = splitByPitch(colRuns, colInk, sGuess);
         List<Integer> cw0 = new ArrayList<>();
         for (int[] r : colRuns) if (r[1] - r[0] >= 0.5f * sGuess) cw0.add(r[1] - r[0]);
         if (!cw0.isEmpty()) {
@@ -171,6 +184,7 @@ final class VerticalReflow {
                 }
             }
             if (cur != null) cells.add(cur);
+            cells = splitByPitch(cells, prof, s);
             if (cells.isEmpty()) continue;
             chars.add(cells);
             job.columns.add(new Rect(region.left + c[0], region.top + cells.get(0)[0],
@@ -182,7 +196,7 @@ final class VerticalReflow {
         if (allowGrow) {
             // Kotak OCR sering tidak menutupi kolom sampai ujung: telusuri kolom ke atas/bawah di gambar asli.
             Rect grown = new Rect();
-            for (Rect c : job.columns) grown.union(extendColumn(src, bg, c, s));
+            for (Rect c : job.columns) grown.union(extendColumn(src, bgGray, darkInk, c, s));
             grown.left -= Math.round(1.0f * s);   // cari juga kolom yang terlewat di kiri/kanan
             grown.right += Math.round(1.0f * s);
             Rect cur = new Rect(region);
@@ -230,14 +244,56 @@ final class VerticalReflow {
     }
 
     /** Perpanjang kolom ke atas & bawah selama masih ada huruf (berhenti di celah besar atau garis gelembung). */
-    private static Rect extendColumn(Bitmap src, int bg, Rect col, float s) {
+    private static int gray(int c) {
+        return (((c >> 16) & 0xFF) * 3 + ((c >> 8) & 0xFF) * 6 + (c & 0xFF)) / 10;
+    }
+
+    private static boolean isInk(int c, int bgGray, boolean darkInk) {
+        int d = gray(c) - bgGray;
+        return darkInk ? d < -60 : d > 60;
+    }
+
+    /**
+     * Huruf manga sering sangat rapat sehingga beberapa huruf menyatu jadi satu potongan.
+     * Potongan yang jauh lebih tinggi dari satu huruf dibelah sesuai ukuran huruf, di baris yang paling sedikit tintanya.
+     */
+    private static List<int[]> splitByPitch(List<int[]> cells, int[] prof, float s) {
+        List<int[]> out = new ArrayList<>();
+        for (int[] c : cells) {
+            int h = c[1] - c[0];
+            int n = Math.round(h / (1.08f * s));
+            if (n <= 1) {
+                out.add(c);
+                continue;
+            }
+            int start = c[0];
+            int win = Math.max(1, Math.round(0.22f * s));
+            for (int k = 1; k < n; k++) {
+                int exp = c[0] + Math.round(k * h / (float) n);
+                int best = exp, bestV = Integer.MAX_VALUE;
+                for (int y = Math.max(start + 1, exp - win); y <= Math.min(c[1] - 1, exp + win); y++) {
+                    int v = prof[y] * 4 + Math.abs(y - exp);
+                    if (v < bestV) {
+                        bestV = v;
+                        best = y;
+                    }
+                }
+                out.add(new int[]{start, best});
+                start = best;
+            }
+            out.add(new int[]{start, c[1]});
+        }
+        return out;
+    }
+
+    private static Rect extendColumn(Bitmap src, int bgGray, boolean darkInk, Rect col, float s) {
         int W = src.getWidth(), H = src.getHeight();
         int m = Math.max(2, Math.round(0.15f * s));
         int x0 = Math.max(0, col.left - m), x1 = Math.min(W, col.right + m);
         int w = x1 - x0;
         int[] row = new int[w];
         int maxGap = Math.round(0.9f * s);
-        int limit = Math.round(30 * s);
+        int limit = Math.round(Math.max(3 * s, 0.6f * col.height()));
         int bottom = col.bottom, top = col.top;
         for (int dir = 1; dir >= -1; dir -= 2) {
             int lastInk = dir > 0 ? col.bottom - 1 : col.top;
@@ -248,19 +304,47 @@ final class VerticalReflow {
                 src.getPixels(row, 0, w, x0, y, w, 1);
                 boolean inside = false, outsideL = false, outsideR = false;
                 for (int x = 0; x < w; x++) {
-                    if (Eraser.dist(row[x], bg) <= 70) continue;
+                    if (!isInk(row[x], bgGray, darkInk)) continue;
                     int sx = x0 + x;
                     if (sx < col.left) outsideL = true;
                     else if (sx >= col.right) outsideR = true;
                     else inside = true;
                 }
-                if (inside && outsideL && outsideR) break; // garis yang melintang (tepi gelembung)
+                if (inside && (outsideL || outsideR)) break; // garis yang keluar dari kolom (tepi gelembung, gambar)
                 if (inside) lastInk = y;
             }
             if (dir > 0) bottom = lastInk + 1;
             else top = lastInk;
         }
         return new Rect(col.left, top, col.right, bottom);
+    }
+
+    /** Buang bintik kecil (screentone, noise) yang lebarnya dan tingginya di bawah maxDim piksel. */
+    private static void removeSpecks(boolean[] ink, int W, int H, int maxDim) {
+        boolean[] seen = new boolean[W * H];
+        int[] queue = new int[W * H];
+        for (int start = 0; start < ink.length; start++) {
+            if (!ink[start] || seen[start]) continue;
+            int head = 0, tail = 0;
+            queue[tail++] = start;
+            seen[start] = true;
+            int minX = W, maxX = -1, minY = H, maxY = -1;
+            boolean big = false;
+            while (head < tail) {
+                int p = queue[head++];
+                int x = p % W, y = p / W;
+                if (x < minX) minX = x;
+                if (x > maxX) maxX = x;
+                if (y < minY) minY = y;
+                if (y > maxY) maxY = y;
+                if (maxX - minX >= maxDim || maxY - minY >= maxDim) big = true;
+                if (x > 0 && ink[p - 1] && !seen[p - 1]) { seen[p - 1] = true; queue[tail++] = p - 1; }
+                if (x < W - 1 && ink[p + 1] && !seen[p + 1]) { seen[p + 1] = true; queue[tail++] = p + 1; }
+                if (y > 0 && ink[p - W] && !seen[p - W]) { seen[p - W] = true; queue[tail++] = p - W; }
+                if (y < H - 1 && ink[p + W] && !seen[p + W]) { seen[p + W] = true; queue[tail++] = p + W; }
+            }
+            if (!big) for (int i = 0; i < tail; i++) ink[queue[i]] = false;
+        }
     }
 
     /** Buang tinta yang menyentuh tepi area (garis gelembung, gambar di sekitar teks). */

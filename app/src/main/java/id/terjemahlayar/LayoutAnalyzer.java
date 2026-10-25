@@ -67,6 +67,8 @@ final class LayoutAnalyzer {
         // diisi saat menghapus teks asli
         final List<Patch> patches = new ArrayList<>();
         boolean erased;
+        /** Area kosong di sekitar teks (mis. bagian dalam gelembung) tempat terjemahan boleh ditulis. */
+        Rect free;
         int fg = 0xFF000000;
         int bg = 0xFFFFFFFF;
 

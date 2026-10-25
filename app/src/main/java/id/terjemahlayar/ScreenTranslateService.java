@@ -1,6 +1,5 @@
 package id.terjemahlayar;
 
-import android.accessibilityservice.AccessibilityButtonController;
 import android.accessibilityservice.AccessibilityService;
 import android.accessibilityservice.GestureDescription;
 import android.annotation.SuppressLint;
@@ -67,7 +66,14 @@ public class ScreenTranslateService extends AccessibilityService {
     private boolean busy;
     private Toast toast;
 
-    private AccessibilityButtonController.AccessibilityButtonCallback a11yButtonCallback;
+    private View menu;
+    /** Lepaskan model offline (memori) bila tidak dipakai beberapa menit. */
+    private final Runnable releasePipeline = () -> {
+        if (pipeline != null && !busy && overlay == null) {
+            pipeline.close();
+            pipeline = null;
+        }
+    };
 
     static final String GOOGLE_PKG = "com.google.android.googlequicksearchbox";
     /** Lama tekan bar navigasi. Pengguna tidak perlu menahan — aplikasi yang menekannya. */
@@ -85,18 +91,7 @@ public class ScreenTranslateService extends AccessibilityService {
         super.onServiceConnected();
         instance = this;
         wm = getSystemService(WindowManager.class);
-        pipeline = new TranslatePipeline();
-        pipeline.warmUp();
         applyPrefs();
-
-        // Tombol aksesibilitas sistem (opsional) juga memicu terjemahan.
-        a11yButtonCallback = new AccessibilityButtonController.AccessibilityButtonCallback() {
-            @Override
-            public void onClicked(AccessibilityButtonController controller) {
-                translateScreen();
-            }
-        };
-        getAccessibilityButtonController().registerAccessibilityButtonCallback(a11yButtonCallback);
     }
 
     @Override
@@ -123,11 +118,8 @@ public class ScreenTranslateService extends AccessibilityService {
     private void cleanup() {
         if (instance == this) instance = null;
         removeOverlay();
+        removeMenu();
         removeBubble();
-        if (a11yButtonCallback != null) {
-            getAccessibilityButtonController().unregisterAccessibilityButtonCallback(a11yButtonCallback);
-            a11yButtonCallback = null;
-        }
         if (pipeline != null) {
             pipeline.close();
             pipeline = null;
@@ -138,8 +130,38 @@ public class ScreenTranslateService extends AccessibilityService {
 
     /** Dipanggil saat pengaturan berubah. */
     void applyPrefs() {
-        if (Prefs.bubbleEnabled(this)) showBubble();
-        else removeBubble();
+        if (Prefs.bubbleEnabled(this)) {
+            showBubble();
+        } else {
+            removeMenu();
+            removeBubble();
+            removeOverlay();
+            main.removeCallbacks(releasePipeline);
+            releasePipeline.run();
+        }
+    }
+
+    /** Sembunyikan tombol: layanan diam (tanpa event, model offline dilepas) sampai ditampilkan lagi. */
+    void hideBubble() {
+        Prefs.setBubbleEnabled(this, false);
+        applyPrefs();
+        showToast("Tombol disembunyikan. Tampilkan lagi dari aplikasi Terjemah Layar.", true);
+    }
+
+    /** Matikan layanan sepenuhnya (sama seperti mematikan di pengaturan Aksesibilitas). */
+    void turnOff() {
+        removeMenu();
+        removeOverlay();
+        removeBubble();
+        showToast("Terjemah Layar dimatikan. Aktifkan lagi dari aplikasinya.", true);
+        disableSelf();
+    }
+
+    private TranslatePipeline pipeline() {
+        if (pipeline == null) pipeline = new TranslatePipeline();
+        main.removeCallbacks(releasePipeline);
+        main.postDelayed(releasePipeline, 3 * 60 * 1000);
+        return pipeline;
     }
 
     // ---------------------------------------------------------------- tombol mengambang
@@ -185,7 +207,7 @@ public class ScreenTranslateService extends AccessibilityService {
             boolean dragging, longPressed;
             final Runnable longPress = () -> {
                 longPressed = true;
-                openSettings();
+                showMenu();
             };
 
             @Override
@@ -254,6 +276,61 @@ public class ScreenTranslateService extends AccessibilityService {
         bubble.setAlpha(b ? 0.6f : 1f);
     }
 
+    // ---------------------------------------------------------------- menu tahan-tekan
+
+    private void showMenu() {
+        removeMenu();
+        if (bubble == null) return;
+        android.widget.LinearLayout box = new android.widget.LinearLayout(this);
+        box.setOrientation(android.widget.LinearLayout.VERTICAL);
+        GradientDrawable bg = new GradientDrawable();
+        bg.setColor(0xF2202124);
+        bg.setCornerRadius(dp(14));
+        box.setBackground(bg);
+        box.setPadding(dp(4), dp(4), dp(4), dp(4));
+        box.setElevation(dp(6));
+        box.addView(menuItem("Buka aplikasi", v -> { removeMenu(); openSettings(); }));
+        box.addView(menuItem("Sembunyikan tombol", v -> { removeMenu(); hideBubble(); }));
+        box.addView(menuItem("Matikan Terjemah Layar", v -> turnOff()));
+        box.setOnTouchListener((v, e) -> {
+            if (e.getActionMasked() == MotionEvent.ACTION_OUTSIDE) removeMenu();
+            return false;
+        });
+
+        WindowManager.LayoutParams p = new WindowManager.LayoutParams(
+                WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.WRAP_CONTENT,
+                WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE | WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH,
+                PixelFormat.TRANSLUCENT);
+        p.gravity = Gravity.TOP | Gravity.START;
+        Rect screen = wm.getCurrentWindowMetrics().getBounds();
+        box.measure(View.MeasureSpec.UNSPECIFIED, View.MeasureSpec.UNSPECIFIED);
+        int mw = box.getMeasuredWidth(), mh = box.getMeasuredHeight();
+        boolean onRight = bubbleParams.x > screen.width() / 2;
+        p.x = onRight ? bubbleParams.x - mw - dp(6) : bubbleParams.x + bubbleParams.width + dp(6);
+        p.y = Math.max(dp(24), Math.min(bubbleParams.y + bubbleParams.height / 2 - mh / 2, screen.height() - mh - dp(24)));
+        menu = box;
+        wm.addView(box, p);
+        main.postDelayed(this::removeMenu, 6000);
+    }
+
+    private TextView menuItem(String label, View.OnClickListener l) {
+        TextView t = new TextView(this);
+        t.setText(label);
+        t.setTextColor(Color.WHITE);
+        t.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
+        t.setPadding(dp(16), dp(12), dp(16), dp(12));
+        t.setOnClickListener(l);
+        return t;
+    }
+
+    private void removeMenu() {
+        if (menu != null) {
+            try { wm.removeView(menu); } catch (Exception ignored) { }
+            menu = null;
+        }
+    }
+
     private void openSettings() {
         Intent i = new Intent(this, MainActivity.class);
         i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
@@ -269,6 +346,7 @@ public class ScreenTranslateService extends AccessibilityService {
     }
 
     void translateScreen() {
+        removeMenu();
         if (busy) return;
         if (overlay != null) { // ketuk lagi saat hasil tampil = tutup
             removeOverlay();
@@ -461,8 +539,7 @@ public class ScreenTranslateService extends AccessibilityService {
     }
 
     private void runPipeline(Bitmap bmp) {
-        if (pipeline == null) { busy = false; return; }
-        pipeline.run(bmp, Prefs.source(this), Prefs.target(this), new TranslatePipeline.Callback() {
+        pipeline().run(bmp, Prefs.source(this), Prefs.target(this), new TranslatePipeline.Callback() {
             @Override
             public void onStatus(String message) {
                 showToast(message, true);

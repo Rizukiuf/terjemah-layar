@@ -1,8 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- Tanpa tombol aksesibilitas sistem (agar tidak muncul tombol ganda) dan tanpa langganan event
+     (layanan diam total sampai tombol 文A diketuk → hemat baterai). -->
 <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
-    android:accessibilityEventTypes="typeWindowStateChanged"
     android:accessibilityFeedbackType="feedbackGeneric"
-    android:accessibilityFlags="flagRequestAccessibilityButton|flagRetrieveInteractiveWindows|flagReportViewIds"
+    android:accessibilityFlags="flagRetrieveInteractiveWindows|flagReportViewIds"
     android:canTakeScreenshot="true"
     android:canRetrieveWindowContent="true"
     android:canPerformGestures="true"
